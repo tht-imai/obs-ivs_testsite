@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>IVS Broadcaster</title>
+  <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 12px;
+    }
+    p {
+      color: #cbd5e1;
+      margin: 0 0 12px;
+    }
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-weight: 600;
+    }
+    input, select, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #e2e8f0;
+      font-size: 16px;
+    }
+    button {
+      background: #2563eb;
+      border: none;
+      margin-top: 12px;
+      font-weight: 700;
+    }
+    button.stop {
+      background: #dc2626;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    canvas {
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      background: #000;
+      border-radius: 14px;
+      margin-top: 16px;
+      border: 1px solid #334155;
+    }
+    .status {
+      margin-top: 12px;
+      min-height: 24px;
+      color: #93c5fd;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .note {
+      font-size: 14px;
+      color: #94a3b8;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Amazon IVS 配信ページ</h1>
+    <p>iPhone Safari から Amazon IVS へ直接配信します。</p>
+
+    <label for="channelType">Channel Type</label>
+    <select id="channelType">
+      <option value="BASIC">BASIC</option>
+      <option value="STANDARD">STANDARD</option>
+    </select>
+
+    <label for="ingestEndpoint">Ingest Endpoint / Ingest Server</label>
+    <input id="ingestEndpoint" type="text" placeholder="例: abcdef.global-contribute.live-video.net" />
+
+    <label for="streamKey">Stream Key</label>
+    <input id="streamKey" type="password" placeholder="ストリームキーを貼り付け" />
+
+    <div class="row">
+      <button id="prepareBtn">カメラ準備</button>
+      <button id="startBtn">配信開始</button>
+    </div>
+    <button id="stopBtn" class="stop">配信停止</button>
+
+    <canvas id="preview"></canvas>
+    <div id="status" class="status">待機中</div>
+
+    <div class="note">
+      配信ページはモック用途です。社外公開URLに置く場合は取り扱いに注意してください。
+    </div>
+  </div>
+
+  <script>
+    const ingestInput = document.getElementById("ingestEndpoint");
+    const streamKeyInput = document.getElementById("streamKey");
+    const channelTypeSelect = document.getElementById("channelType");
+    const prepareBtn = document.getElementById("prepareBtn");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const previewEl = document.getElementById("preview");
+    const statusEl = document.getElementById("status");
+
+    let client = null;
+    let cameraStream = null;
+    let micStream = null;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      console.log(text);
+    }
+
+    function normalizeIngestEndpoint(value) {
+      return value
+        .trim()
+        .replace(/^rtmps?:\/\//i, "")
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/.*$/i, "")
+        .replace(/:\d+$/i, "");
+    }
+
+    function getStreamConfig() {
+      const type = channelTypeSelect.value;
+      if (type === "STANDARD") {
+        return IVSBroadcastClient.STANDARD_PORTRAIT;
+      }
+      return IVSBroadcastClient.BASIC_PORTRAIT;
+    }
+
+    function createClient() {
+      const ingestEndpoint = normalizeIngestEndpoint(ingestInput.value);
+      if (!ingestEndpoint) {
+        throw new Error("Ingest Endpoint を入力してください。");
+      }
+
+      client = IVSBroadcastClient.create({
+        streamConfig: getStreamConfig(),
+        ingestEndpoint
+      });
+
+      client.attachPreview(previewEl);
+      return client;
+    }
+
+    async function prepareCamera() {
+      try {
+        setStatus("権限を確認しています...");
+        if (!client) createClient();
+
+        const config = getStreamConfig();
+
+        const media = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: config.maxResolution.width },
+            height: { ideal: config.maxResolution.height }
+          },
+          audio: true
+        });
+
+        const videoTrack = media.getVideoTracks()[0];
+        const audioTrack = media.getAudioTracks()[0];
+
+        cameraStream = new MediaStream([videoTrack]);
+        if (audioTrack) {
+          micStream = new MediaStream([audioTrack]);
+        }
+
+        client.addVideoInputDevice(cameraStream, "camera1", { index: 0 });
+        if (micStream) {
+          client.addAudioInputDevice(micStream, "mic1");
+        }
+
+        setStatus("カメラ準備完了。プレビューが見えていればOKです。");
+      } catch (err) {
+        console.error(err);
+        setStatus("カメラ準備に失敗しました: " + (err.message || err));
+      }
+    }
+
+    async function startBroadcast() {
+      try {
+        const streamKey = streamKeyInput.value.trim();
+        if (!streamKey) {
+          setStatus("Stream Key を入力してください。");
+          return;
+        }
+        if (!client) {
+          await prepareCamera();
+        }
+        setStatus("配信開始中...");
+        await client.startBroadcast(streamKey);
+        setStatus("配信開始しました。PC側の視聴ページで確認してください。");
+      } catch (err) {
+        console.error(err);
+        setStatus("配信開始に失敗しました: " + (err.message || err));
+      }
+    }
+
+    function stopBroadcast() {
+      try {
+        if (client) {
+          client.stopBroadcast();
+        }
+        setStatus("配信を停止しました。");
+      } catch (err) {
+        console.error(err);
+        setStatus("配信停止でエラー: " + (err.message || err));
+      }
+    }
+
+    prepareBtn.addEventListener("click", prepareCamera);
+    startBtn.addEventListener("click", startBroadcast);
+    stopBtn.addEventListener("click", stopBroadcast);
+  </script>
+</body>
+</html>
