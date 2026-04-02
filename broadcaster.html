@@ -2,9 +2,15 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>IVS Broadcaster</title>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+  />
+  <title>Amazon IVS 配信ページ（マイクON/OFF切替付き）</title>
+
+  <!-- Amazon IVS Web Broadcast SDK -->
   <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
+
   <style>
     body {
       margin: 0;
@@ -12,25 +18,33 @@
       background: #0f172a;
       color: #e2e8f0;
     }
+
     .wrap {
       max-width: 720px;
       margin: 0 auto;
       padding: 16px;
     }
+
     h1 {
       font-size: 24px;
       margin: 0 0 12px;
     }
+
     p {
       color: #cbd5e1;
       margin: 0 0 12px;
+      line-height: 1.6;
     }
+
     label {
       display: block;
       margin: 14px 0 6px;
       font-weight: 600;
     }
-    input, select, button {
+
+    input,
+    select,
+    button {
       width: 100%;
       box-sizing: border-box;
       padding: 12px;
@@ -40,21 +54,38 @@
       color: #e2e8f0;
       font-size: 16px;
     }
+
     button {
       background: #2563eb;
       border: none;
       margin-top: 12px;
       font-weight: 700;
+      cursor: pointer;
     }
+
+    button.secondary {
+      background: #475569;
+    }
+
     button.stop {
       background: #dc2626;
     }
+
+    button.mic-on {
+      background: #16a34a;
+    }
+
+    button.mic-off {
+      background: #7f1d1d;
+    }
+
     .row {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10px;
       margin-top: 12px;
     }
+
     canvas {
       width: 100%;
       aspect-ratio: 9 / 16;
@@ -63,24 +94,37 @@
       margin-top: 16px;
       border: 1px solid #334155;
     }
+
     .status {
       margin-top: 12px;
       min-height: 24px;
       color: #93c5fd;
       white-space: pre-wrap;
       word-break: break-word;
+      line-height: 1.6;
     }
+
     .note {
       font-size: 14px;
       color: #94a3b8;
       margin-top: 12px;
+      line-height: 1.6;
+    }
+
+    .small {
+      font-size: 14px;
+      color: #cbd5e1;
+      margin-top: 8px;
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Amazon IVS 配信ページ</h1>
-    <p>iPhone Safari から Amazon IVS へ直接配信します。</p>
+    <p>
+      iPhone Safari から Amazon IVS へ直接配信します。<br />
+      マイクは初期状態では OFF にしてあります。必要な時だけボタンで ON にしてください。
+    </p>
 
     <label for="channelType">Channel Type</label>
     <select id="channelType">
@@ -89,22 +133,38 @@
     </select>
 
     <label for="ingestEndpoint">Ingest Endpoint / Ingest Server</label>
-    <input id="ingestEndpoint" type="text" placeholder="例: abcdef.global-contribute.live-video.net" />
+    <input
+      id="ingestEndpoint"
+      type="text"
+      placeholder="例: abcdef.global-contribute.live-video.net"
+    />
 
     <label for="streamKey">Stream Key</label>
-    <input id="streamKey" type="password" placeholder="ストリームキーを貼り付け" />
+    <input
+      id="streamKey"
+      type="password"
+      placeholder="ストリームキーを貼り付け"
+    />
 
     <div class="row">
       <button id="prepareBtn">カメラ準備</button>
       <button id="startBtn">配信開始</button>
     </div>
-    <button id="stopBtn" class="stop">配信停止</button>
+
+    <div class="row">
+      <button id="toggleMicBtn" class="mic-off">マイクをONにする</button>
+      <button id="stopBtn" class="stop">配信停止</button>
+    </div>
+
+    <div class="small" id="micStateText">現在のマイク状態: OFF</div>
 
     <canvas id="preview"></canvas>
+
     <div id="status" class="status">待機中</div>
 
     <div class="note">
-      配信ページはモック用途です。社外公開URLに置く場合は取り扱いに注意してください。
+      配信ページはモック用途です。<br />
+      Stream Key を直接入力するため、公開範囲には注意してください。
     </div>
   </div>
 
@@ -115,16 +175,35 @@
     const prepareBtn = document.getElementById("prepareBtn");
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
+    const toggleMicBtn = document.getElementById("toggleMicBtn");
     const previewEl = document.getElementById("preview");
     const statusEl = document.getElementById("status");
+    const micStateTextEl = document.getElementById("micStateText");
 
     let client = null;
     let cameraStream = null;
     let micStream = null;
+    let isPrepared = false;
+    let isBroadcasting = false;
+    let micEnabled = false; // 初期状態はOFF
 
     function setStatus(text) {
       statusEl.textContent = text;
       console.log(text);
+    }
+
+    function setMicUiState() {
+      if (micEnabled) {
+        toggleMicBtn.textContent = "マイクをOFFにする";
+        toggleMicBtn.classList.remove("mic-off");
+        toggleMicBtn.classList.add("mic-on");
+        micStateTextEl.textContent = "現在のマイク状態: ON";
+      } else {
+        toggleMicBtn.textContent = "マイクをONにする";
+        toggleMicBtn.classList.remove("mic-on");
+        toggleMicBtn.classList.add("mic-off");
+        micStateTextEl.textContent = "現在のマイク状態: OFF";
+      }
     }
 
     function normalizeIngestEndpoint(value) {
@@ -138,20 +217,25 @@
 
     function getStreamConfig() {
       const type = channelTypeSelect.value;
+
       if (type === "STANDARD") {
         return IVSBroadcastClient.STANDARD_PORTRAIT;
       }
+
       return IVSBroadcastClient.BASIC_PORTRAIT;
     }
 
     function createClient() {
       const ingestEndpoint = normalizeIngestEndpoint(ingestInput.value);
+
       if (!ingestEndpoint) {
         throw new Error("Ingest Endpoint を入力してください。");
       }
 
+      const streamConfig = getStreamConfig();
+
       client = IVSBroadcastClient.create({
-        streamConfig: getStreamConfig(),
+        streamConfig,
         ingestEndpoint
       });
 
@@ -159,10 +243,49 @@
       return client;
     }
 
+    function stopTracksOfStream(stream) {
+      if (!stream) return;
+
+      const tracks = stream.getTracks();
+      for (const track of tracks) {
+        track.stop();
+      }
+    }
+
+    function cleanupMediaOnly() {
+      stopTracksOfStream(cameraStream);
+      stopTracksOfStream(micStream);
+
+      cameraStream = null;
+      micStream = null;
+      isPrepared = false;
+      micEnabled = false;
+      setMicUiState();
+    }
+
     async function prepareCamera() {
       try {
-        setStatus("権限を確認しています...");
-        if (!client) createClient();
+        setStatus("カメラとマイクの権限を確認しています...");
+
+        const ingestEndpoint = normalizeIngestEndpoint(ingestInput.value);
+        if (!ingestEndpoint) {
+          setStatus("Ingest Endpoint を入力してください。");
+          return;
+        }
+
+        // すでに準備済みなら二重取得を避ける
+        if (isPrepared && cameraStream) {
+          setStatus("すでにカメラ準備済みです。");
+          return;
+        }
+
+        // 既存のメディアが残っていたら停止
+        cleanupMediaOnly();
+
+        // client が未作成なら作成
+        if (!client) {
+          createClient();
+        }
 
         const config = getStreamConfig();
 
@@ -178,17 +301,30 @@
         const videoTrack = media.getVideoTracks()[0];
         const audioTrack = media.getAudioTracks()[0];
 
+        if (!videoTrack) {
+          throw new Error("ビデオトラックを取得できませんでした。");
+        }
+
         cameraStream = new MediaStream([videoTrack]);
+        client.addVideoInputDevice(cameraStream, "camera1", { index: 0 });
+
         if (audioTrack) {
           micStream = new MediaStream([audioTrack]);
-        }
-
-        client.addVideoInputDevice(cameraStream, "camera1", { index: 0 });
-        if (micStream) {
           client.addAudioInputDevice(micStream, "mic1");
+
+          // 初期状態はOFFにしたいので enabled = false
+          const micTrack = micStream.getAudioTracks()[0];
+          micTrack.enabled = false;
+          micEnabled = false;
+          setMicUiState();
+        } else {
+          micStream = null;
+          micEnabled = false;
+          setMicUiState();
         }
 
-        setStatus("カメラ準備完了。プレビューが見えていればOKです。");
+        isPrepared = true;
+        setStatus("カメラ準備完了。プレビューが見えていればOKです。マイクは現在OFFです。");
       } catch (err) {
         console.error(err);
         setStatus("カメラ準備に失敗しました: " + (err.message || err));
@@ -198,16 +334,34 @@
     async function startBroadcast() {
       try {
         const streamKey = streamKeyInput.value.trim();
+
         if (!streamKey) {
           setStatus("Stream Key を入力してください。");
           return;
         }
+
         if (!client) {
-          await prepareCamera();
+          setStatus("先にカメラ準備を行ってください。");
+          return;
         }
+
+        if (!isPrepared) {
+          setStatus("先にカメラ準備を行ってください。");
+          return;
+        }
+
+        if (isBroadcasting) {
+          setStatus("すでに配信中です。");
+          return;
+        }
+
         setStatus("配信開始中...");
         await client.startBroadcast(streamKey);
-        setStatus("配信開始しました。PC側の視聴ページで確認してください。");
+        isBroadcasting = true;
+        setStatus(
+          "配信開始しました。\n" +
+          "PC側の視聴ページまたは Amazon IVS コンソールで確認してください。"
+        );
       } catch (err) {
         console.error(err);
         setStatus("配信開始に失敗しました: " + (err.message || err));
@@ -216,9 +370,13 @@
 
     function stopBroadcast() {
       try {
-        if (client) {
-          client.stopBroadcast();
+        if (!client) {
+          setStatus("配信クライアントがまだ作成されていません。");
+          return;
         }
+
+        client.stopBroadcast();
+        isBroadcasting = false;
         setStatus("配信を停止しました。");
       } catch (err) {
         console.error(err);
@@ -226,9 +384,41 @@
       }
     }
 
+    function toggleMic() {
+      try {
+        if (!micStream) {
+          setStatus("マイクがまだ準備されていません。先に「カメラ準備」を押してください。");
+          return;
+        }
+
+        const micTrack = micStream.getAudioTracks()[0];
+
+        if (!micTrack) {
+          setStatus("マイクトラックが見つかりませんでした。");
+          return;
+        }
+
+        micEnabled = !micEnabled;
+        micTrack.enabled = micEnabled;
+        setMicUiState();
+
+        if (micEnabled) {
+          setStatus("マイクをONにしました。");
+        } else {
+          setStatus("マイクをOFFにしました。");
+        }
+      } catch (err) {
+        console.error(err);
+        setStatus("マイク切替に失敗しました: " + (err.message || err));
+      }
+    }
+
     prepareBtn.addEventListener("click", prepareCamera);
     startBtn.addEventListener("click", startBroadcast);
     stopBtn.addEventListener("click", stopBroadcast);
+    toggleMicBtn.addEventListener("click", toggleMic);
+
+    setMicUiState();
   </script>
 </body>
 </html>
