@@ -6,7 +6,7 @@
     name="viewport"
     content="width=device-width, initial-scale=1.0, viewport-fit=cover"
   />
-  <title>Amazon IVS 配信ページ（マイクON/OFF切替付き）</title>
+  <title>Amazon IVS 配信ページ（安定版マイク切替）</title>
 
   <!-- Amazon IVS Web Broadcast SDK -->
   <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
@@ -61,10 +61,6 @@
       margin-top: 12px;
       font-weight: 700;
       cursor: pointer;
-    }
-
-    button.secondary {
-      background: #475569;
     }
 
     button.stop {
@@ -123,7 +119,7 @@
     <h1>Amazon IVS 配信ページ</h1>
     <p>
       iPhone Safari から Amazon IVS へ直接配信します。<br />
-      マイクは初期状態では OFF にしてあります。必要な時だけボタンで ON にしてください。
+      マイクは初期状態では OFF です。必要な時だけ ON にしてください。
     </p>
 
     <label for="channelType">Channel Type</label>
@@ -180,12 +176,16 @@
     const statusEl = document.getElementById("status");
     const micStateTextEl = document.getElementById("micStateText");
 
+    const VIDEO_DEVICE_NAME = "camera1";
+    const AUDIO_DEVICE_NAME = "mic1";
+
     let client = null;
     let cameraStream = null;
     let micStream = null;
+
     let isPrepared = false;
     let isBroadcasting = false;
-    let micEnabled = false; // 初期状態はOFF
+    let micEnabled = false;
 
     function setStatus(text) {
       statusEl.textContent = text;
@@ -217,12 +217,32 @@
 
     function getStreamConfig() {
       const type = channelTypeSelect.value;
-
       if (type === "STANDARD") {
         return IVSBroadcastClient.STANDARD_PORTRAIT;
       }
-
       return IVSBroadcastClient.BASIC_PORTRAIT;
+    }
+
+    function stopTracksOfStream(stream) {
+      if (!stream) return;
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+    }
+
+    function resetClientOnlyFlags() {
+      isPrepared = false;
+      isBroadcasting = false;
+      micEnabled = false;
+      setMicUiState();
+    }
+
+    function cleanupAllMedia() {
+      stopTracksOfStream(cameraStream);
+      stopTracksOfStream(micStream);
+      cameraStream = null;
+      micStream = null;
+      resetClientOnlyFlags();
     }
 
     function createClient() {
@@ -232,10 +252,8 @@
         throw new Error("Ingest Endpoint を入力してください。");
       }
 
-      const streamConfig = getStreamConfig();
-
       client = IVSBroadcastClient.create({
-        streamConfig,
+        streamConfig: getStreamConfig(),
         ingestEndpoint
       });
 
@@ -243,29 +261,9 @@
       return client;
     }
 
-    function stopTracksOfStream(stream) {
-      if (!stream) return;
-
-      const tracks = stream.getTracks();
-      for (const track of tracks) {
-        track.stop();
-      }
-    }
-
-    function cleanupMediaOnly() {
-      stopTracksOfStream(cameraStream);
-      stopTracksOfStream(micStream);
-
-      cameraStream = null;
-      micStream = null;
-      isPrepared = false;
-      micEnabled = false;
-      setMicUiState();
-    }
-
     async function prepareCamera() {
       try {
-        setStatus("カメラとマイクの権限を確認しています...");
+        setStatus("カメラを準備しています...");
 
         const ingestEndpoint = normalizeIngestEndpoint(ingestInput.value);
         if (!ingestEndpoint) {
@@ -273,58 +271,47 @@
           return;
         }
 
-        // すでに準備済みなら二重取得を避ける
-        if (isPrepared && cameraStream) {
-          setStatus("すでにカメラ準備済みです。");
+        if (isBroadcasting) {
+          setStatus("配信中は再準備できません。いったん配信停止してください。");
           return;
         }
 
-        // 既存のメディアが残っていたら停止
-        cleanupMediaOnly();
+        cleanupAllMedia();
+        client = createClient();
 
-        // client が未作成なら作成
-        if (!client) {
-          createClient();
-        }
+        const streamConfig = getStreamConfig();
 
-        const config = getStreamConfig();
-
-        const media = await navigator.mediaDevices.getUserMedia({
+        cameraStream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: "environment" },
-            width: { ideal: config.maxResolution.width },
-            height: { ideal: config.maxResolution.height }
+            width: { ideal: streamConfig.maxResolution.width },
+            height: { ideal: streamConfig.maxResolution.height }
           },
-          audio: true
+          audio: false
         });
 
-        const videoTrack = media.getVideoTracks()[0];
-        const audioTrack = media.getAudioTracks()[0];
+        client.addVideoInputDevice(cameraStream, VIDEO_DEVICE_NAME, { index: 0 });
 
-        if (!videoTrack) {
-          throw new Error("ビデオトラックを取得できませんでした。");
-        }
-
-        cameraStream = new MediaStream([videoTrack]);
-        client.addVideoInputDevice(cameraStream, "camera1", { index: 0 });
-
-        if (audioTrack) {
-          micStream = new MediaStream([audioTrack]);
-          client.addAudioInputDevice(micStream, "mic1");
-
-          // 初期状態はOFFにしたいので enabled = false
-          const micTrack = micStream.getAudioTracks()[0];
-          micTrack.enabled = false;
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false
+          });
           micEnabled = false;
           setMicUiState();
-        } else {
+          setStatus("カメラ準備完了。プレビューが見えていればOKです。マイクは現在OFFです。");
+        } catch (audioError) {
           micStream = null;
           micEnabled = false;
           setMicUiState();
+          setStatus(
+            "カメラ準備完了。マイク権限は未取得または拒否されています。\n" +
+            "映像だけで配信できます。"
+          );
+          console.warn("Microphone permission/setup failed:", audioError);
         }
 
         isPrepared = true;
-        setStatus("カメラ準備完了。プレビューが見えていればOKです。マイクは現在OFFです。");
       } catch (err) {
         console.error(err);
         setStatus("カメラ準備に失敗しました: " + (err.message || err));
@@ -340,13 +327,8 @@
           return;
         }
 
-        if (!client) {
-          setStatus("先にカメラ準備を行ってください。");
-          return;
-        }
-
-        if (!isPrepared) {
-          setStatus("先にカメラ準備を行ってください。");
+        if (!client || !isPrepared) {
+          setStatus("先に「カメラ準備」を押してください。");
           return;
         }
 
@@ -384,32 +366,71 @@
       }
     }
 
-    function toggleMic() {
+    async function turnMicOn() {
+      if (!client || !isPrepared) {
+        setStatus("先に「カメラ準備」を押してください。");
+        return;
+      }
+
+      if (micEnabled) {
+        setStatus("マイクはすでにONです。");
+        return;
+      }
+
       try {
         if (!micStream) {
-          setStatus("マイクがまだ準備されていません。先に「カメラ準備」を押してください。");
-          return;
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false
+          });
         }
 
-        const micTrack = micStream.getAudioTracks()[0];
-
-        if (!micTrack) {
-          setStatus("マイクトラックが見つかりませんでした。");
-          return;
+        try {
+          client.removeAudioInputDevice(AUDIO_DEVICE_NAME);
+        } catch (_) {
+          // まだ未登録なら無視
         }
 
-        micEnabled = !micEnabled;
-        micTrack.enabled = micEnabled;
+        client.addAudioInputDevice(micStream, AUDIO_DEVICE_NAME);
+        micEnabled = true;
         setMicUiState();
-
-        if (micEnabled) {
-          setStatus("マイクをONにしました。");
-        } else {
-          setStatus("マイクをOFFにしました。");
-        }
+        setStatus("マイクをONにしました。");
       } catch (err) {
         console.error(err);
-        setStatus("マイク切替に失敗しました: " + (err.message || err));
+        setStatus("マイクをONにできませんでした: " + (err.message || err));
+      }
+    }
+
+    function turnMicOff() {
+      if (!client || !isPrepared) {
+        setStatus("先に「カメラ準備」を押してください。");
+        return;
+      }
+
+      if (!micEnabled) {
+        setStatus("マイクはすでにOFFです。");
+        return;
+      }
+
+      try {
+        client.removeAudioInputDevice(AUDIO_DEVICE_NAME);
+      } catch (err) {
+        console.warn("removeAudioInputDevice failed:", err);
+      }
+
+      stopTracksOfStream(micStream);
+      micStream = null;
+
+      micEnabled = false;
+      setMicUiState();
+      setStatus("マイクをOFFにしました。");
+    }
+
+    async function toggleMic() {
+      if (micEnabled) {
+        turnMicOff();
+      } else {
+        await turnMicOn();
       }
     }
 
